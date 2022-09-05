@@ -70,17 +70,25 @@ for iSess = 1:numel(sessionID)
   input.electrodeCoordinates = electrodeCoordinates{iSess};
   input.sessionID = sessionID{iSess};
   input.electrodeLabel = electrodeLabel{iSess};
-  tbl1 = createElectrodeTable(nwb, input);
+  if probeInserted{input.iElectrode}
+    tbl1 = createElectrodeTable(nwb, input);
+  else
+    tbl1 = [];
+  end
   
   input.iElectrode = 2;
-  tbl2 = createElectrodeTable(nwb, input);
+  if probeInserted{input.iElectrode}
+    tbl2 = createElectrodeTable(nwb, input);
+  else
+    tbl2 = [];
+  end
   
   tbl = [tbl1; tbl2];
   electrode_table = util.table2nwb(tbl, 'all electrodes');
   nwb.general_extracellular_ephys_electrodes = electrode_table;
   
   % Load spike times from the MAT file
-  [spikes, metadata, derivedData] = getNeuronexusSpikes(animalDerivedDataFile, animalID, sessionID{iSess}, tbl);
+  [spikes, metadata, derivedData] = getSpikes(animalDerivedDataFile, animalID, sessionID{iSess}, tbl);
   [spike_times_vector, spike_times_index] = util.create_indexed_column(spikes);
   spike_times_vector.description = 'Session spike times';
   spike_times_index.description = 'Indices dividing spike times into units';
@@ -112,16 +120,31 @@ for iSess = 1:numel(sessionID)
   % We only store mean waveforms on maximum amplitude channels.
   % More on ragged array indexing used in NWB files see https://nwb-schema.readthedocs.io/en/latest/format_description.html
   [waveforms, waveformIndex] = util.create_indexed_column(waveformVec');
-  waveformIndexIndex1 = reshape(waveformIndex.data(1:size(waveformVec1,1)),nCh{iSess}{1},size(waveformVec1,1)/nCh{iSess}{1})';
   waveformIndexIndex = {};
-  for iUnit = 1:size(waveformVecGrp1,1)
-    waveformIndexIndex = [waveformIndexIndex; waveformIndexIndex1(iUnit,:)];
+  if ~isempty(waveformVec1)
+    waveformIndexIndex1 = reshape(waveformIndex.data(1:size(waveformVec1,1)),nCh{iSess}{1},size(waveformVec1,1)/nCh{iSess}{1})';
+    for iUnit = 1:size(waveformVecGrp1,1)
+      waveformIndexIndex = [waveformIndexIndex; waveformIndexIndex1(iUnit,:)];
+    end
   end
-  waveformIndexIndex2 = reshape(waveformIndex.data(size(waveformVec1,1)+1:end),nCh{iSess}{2},size(waveformVec2,1)/nCh{iSess}{2})';
-  for iUnit = 1:size(waveformVecGrp2,1)
-    waveformIndexIndex = [waveformIndexIndex; waveformIndexIndex2(iUnit,:)];
+  if ~isempty(waveformVec2)
+    waveformIndexIndex2 = reshape(waveformIndex.data(size(waveformVec1,1)+1:end),nCh{iSess}{2},size(waveformVec2,1)/nCh{iSess}{2})';
+    for iUnit = 1:size(waveformVecGrp2,1)
+      waveformIndexIndex = [waveformIndexIndex; waveformIndexIndex2(iUnit,:)];
+    end
   end
   [inds, waveformIndexIndex] = util.create_indexed_column(waveformIndexIndex');
+  
+  % Convert rel_horz_pos, rel_vert_pos, and waveform_mean to cell arrays of
+  % strings. For some reason I cannot store them in the NWB file in any
+  % other form than strings.
+  rel_horz_pos = num2cell(cell2mat(table2array(metadata(:,7)))./1000);
+  rel_vert_pos = num2cell(cell2mat(table2array(metadata(:,8)))./1000);
+  for iUnit = 1:numel(rel_horz_pos)
+    rel_horz_pos{iUnit} = num2str(rel_horz_pos{iUnit});
+    rel_vert_pos{iUnit} = num2str(rel_vert_pos{iUnit});
+    waveformMeans{iUnit} = num2str(waveformMeans{iUnit});
+  end
   
   % Store spiking and waveform data inside the nwb object
   % see https://neurodatawithoutborders.github.io/matnwb/doc/+types/+core/Units.html
@@ -153,10 +176,10 @@ for iSess = 1:numel(sessionID)
     'data', metadata(:,6), ...
     'description', 'Local probe channel with the largest cluster waveform amplitude'), ...
     'rel_horz_pos', types.hdmf_common.VectorData( ...
-    'data', num2cell(cell2mat(table2array(metadata(:,7)))./1000), ...
+    'data', rel_horz_pos, ...
     'description', 'Probe-relative horizontal position in mm'), ...
     'rel_vert_pos', types.hdmf_common.VectorData( ...
-    'data', num2cell(cell2mat(table2array(metadata(:,8)))./1000), ...
+    'data', rel_vert_pos, ...
     'description', 'Probe tip-relative vertical position in mm'), ...
     'isi_violations', types.hdmf_common.VectorData( ...
     'data', metadata(:,9), ...
@@ -241,7 +264,8 @@ for iSess = 1:numel(sessionID)
 end
 
 % Read the NWB file
-%nwb2 = nwbRead('ecephys_test.nwb');
+% nwb2 = nwbRead('ecephys_session_01.nwb');
+% a = nwb2.units.getRow(1);
 
 
 
@@ -337,8 +361,8 @@ for iShank = 1:nSh{iEl}
 end
 end
 
-function [spikes, metadataTbl, derivedData] = getNeuronexusSpikes(animalDerivedDataFile, animalID, sessionID, electrodeTbl)
-% getNeuronexusSpikes(animalDerivedDataFile, animalID, sessionID, electrodeTbl)
+function [spikes, metadataTbl, derivedData] = getSpikes(animalDerivedDataFile, animalID, sessionID, electrodeTbl)
+% getSpikes(animalDerivedDataFile, animalID, sessionID, electrodeTbl)
 %
 % Function loads Neuronexus spiking data from a MAT file with a custom data
 % structure. Input:
@@ -381,70 +405,54 @@ function [spikes, metadataTbl, derivedData] = getNeuronexusSpikes(animalDerivedD
 
 % Data series names with different brain areas
 derivedData = load(animalDerivedDataFile);
-dataSeriesNameS1 = [animalID '_s' sessionID '1'];
-dataSeriesNameVB = [animalID '_s' sessionID '2'];
-dataSeriesNamePo = [animalID '_s' sessionID '3'];
-dataSeriesNameLP = [animalID '_s' sessionID '4'];
-dataSeriesNameDG = [animalID '_s' sessionID '5'];
-dataSeriesNameCA1 = [animalID '_s' sessionID '6'];
-dataSeriesNameRSC = [animalID '_s' sessionID '7'];
+dataSeriesNames = {};
+for iSeries = 1:11
+  dataSeriesNames{iSeries} = [animalID '_s' sessionID num2str(iSeries)];
+end
+dataSeriesNames{iSeries+1} = [animalID '_s' sessionID];
 
 % Series data
-seriesDerivedDataS1 = derivedData.dataStruct.seriesData.(dataSeriesNameS1);
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameVB)
-  seriesDerivedDataVB = derivedData.dataStruct.seriesData.(dataSeriesNameVB);
-end
-seriesDerivedDataPo = derivedData.dataStruct.seriesData.(dataSeriesNamePo);
-seriesDerivedDataLP = derivedData.dataStruct.seriesData.(dataSeriesNameLP);
-seriesDerivedDataDG = derivedData.dataStruct.seriesData.(dataSeriesNameDG);
-seriesDerivedDataCA1 = derivedData.dataStruct.seriesData.(dataSeriesNameCA1);
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameRSC)
-  seriesDerivedDataRSC = derivedData.dataStruct.seriesData.(dataSeriesNameRSC);
+seriesDerivedData = {};
+for iSeries = 1:numel(dataSeriesNames)
+  if isfield(derivedData.dataStruct.seriesData, dataSeriesNames{iSeries})
+    seriesDerivedData{iSeries} = derivedData.dataStruct.seriesData.(dataSeriesNames{iSeries});
+    srData = seriesDerivedData{iSeries}.conf.samplingParams.srData;
+  else
+    seriesDerivedData{iSeries} = [];
+  end
 end
 
 % Series unit data
-seriesDerivedUnitDataS1 = seriesDerivedDataS1.shankData.shank1;
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameVB)
-  seriesDerivedUnitDataVB = seriesDerivedDataVB.shankData.shank1;
-end
-seriesDerivedUnitDataPo = seriesDerivedDataPo.shankData.shank1;
-seriesDerivedUnitDataLP = seriesDerivedDataLP.shankData.shank1;
-seriesDerivedUnitDataDG = seriesDerivedDataDG.shankData.shank1;
-seriesDerivedUnitDataCA1 = seriesDerivedDataCA1.shankData.shank1;
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameRSC)
-  seriesDerivedUnitDataRSC = seriesDerivedDataRSC.shankData.shank1;
+seriesDerivedUnitData = {};
+for iSeries = 1:numel(dataSeriesNames)
+  if ~isempty(seriesDerivedData{iSeries})
+    seriesDerivedUnitData{iSeries} = seriesDerivedData{iSeries}.shankData.shank1;
+  else
+    seriesDerivedUnitData{iSeries} = [];
+  end
 end
 
 % Series population data
-seriesDerivedPopulationDataS1 = seriesDerivedDataS1.popData;
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameVB)
-  seriesDerivedPopulationDataVB = seriesDerivedDataVB.popData;
-end
-seriesDerivedPopulationDataPo = seriesDerivedDataPo.popData;
-seriesDerivedPopulationDataLP = seriesDerivedDataLP.popData;
-seriesDerivedPopulationDataDG = seriesDerivedDataDG.popData;
-seriesDerivedPopulationDataCA1 = seriesDerivedDataCA1.popData;
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameRSC)
-  seriesDerivedPopulationDataRSC = seriesDerivedDataRSC.popData;
+seriesDerivedPopulationData = {};
+for iSeries = 1:numel(dataSeriesNames)
+  if ~isempty(seriesDerivedData{iSeries})
+    seriesDerivedPopulationData{iSeries} = seriesDerivedData{iSeries}.popData;
+  else
+    seriesDerivedPopulationData{iSeries} = [];
+  end
 end
 
 % Spike array
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameVB)
-  sparseSpikes = concatenateMat(seriesDerivedPopulationDataS1.spkDB, seriesDerivedPopulationDataVB.spkDB);
-  sparseSpikes = concatenateMat(sparseSpikes, seriesDerivedPopulationDataPo.spkDB);
-else
-  sparseSpikes = concatenateMat(seriesDerivedPopulationDataS1.spkDB, seriesDerivedPopulationDataPo.spkDB);
-end
-sparseSpikes = concatenateMat(sparseSpikes, seriesDerivedPopulationDataLP.spkDB);
-sparseSpikes = concatenateMat(sparseSpikes, seriesDerivedPopulationDataDG.spkDB);
-sparseSpikes = concatenateMat(sparseSpikes, seriesDerivedPopulationDataCA1.spkDB);
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameRSC)
-  sparseSpikes = concatenateMat(sparseSpikes, seriesDerivedPopulationDataRSC.spkDB);
+sparseSpikes = [];
+for iSeries = 1:numel(dataSeriesNames)
+  if ~isempty(seriesDerivedPopulationData{iSeries})
+    sparseSpikes = concatenateMat(sparseSpikes, seriesDerivedPopulationData{iSeries}.spkDB);
+  end
 end
 
 % Spike times
 nRows = size(sparseSpikes,1);
-timeVector = (1:size(sparseSpikes,2))./seriesDerivedDataS1.conf.samplingParams.srData;
+timeVector = (1:size(sparseSpikes,2))./srData;
 for iUnit = 1:nRows
   spikes{iUnit} = timeVector(logical(full(sparseSpikes(iUnit,:)))); %#ok<*SAGROW>
 end
@@ -452,65 +460,90 @@ end
 % Unit metadata: [local_unit_id type local_probe_channel horizontal_position vertical_position ...
 %                 isi_violations isolation_distance anterior_posterior_ccf_coordinate ...
 %                 dorsal_ventral_ccf_coordinate left_right_ccf_coordinate]
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameVB)
-  metadata = concatenateMat(seriesDerivedPopulationDataS1.muaMetadata, seriesDerivedPopulationDataVB.muaMetadata);
-  metadata = concatenateMat(metadata, seriesDerivedPopulationDataPo.muaMetadata);
-else
-  metadata = concatenateMat(seriesDerivedPopulationDataS1.muaMetadata, seriesDerivedPopulationDataPo.muaMetadata);
-end
-metadata = concatenateMat(metadata, seriesDerivedPopulationDataLP.muaMetadata);
-metadata = concatenateMat(metadata, seriesDerivedPopulationDataDG.muaMetadata);
-metadata = concatenateMat(metadata, seriesDerivedPopulationDataCA1.muaMetadata);
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameRSC)
-  metadata = concatenateMat(metadata, seriesDerivedPopulationDataRSC.muaMetadata);
+metadata = [];
+for iSeries = 1:numel(dataSeriesNames)
+  if ~isempty(seriesDerivedPopulationData{iSeries})
+    metadata = concatenateMat(metadata, seriesDerivedPopulationData{iSeries}.muaMetadata);
+  end
 end
 
-% Unit metadata: [area metadata]
-areas = repmat({'S1'}, size(seriesDerivedPopulationDataS1.muaMetadata,1), 1);
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameVB)
-  areas = [areas; repmat({'VB'}, size(seriesDerivedPopulationDataVB.muaMetadata,1), 1)];
-end
-areas = [areas; repmat({'Po'}, size(seriesDerivedPopulationDataPo.muaMetadata,1), 1)];
-areas = [areas; repmat({'LP'}, size(seriesDerivedPopulationDataLP.muaMetadata,1), 1)];
-areas = [areas; repmat({'DG'}, size(seriesDerivedPopulationDataDG.muaMetadata,1), 1)];
-areas = [areas; repmat({'CA1'}, size(seriesDerivedPopulationDataCA1.muaMetadata,1), 1)];
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameRSC)
-  areas = [areas; repmat({'RSC'}, size(seriesDerivedPopulationDataRSC.muaMetadata,1), 1)];
+% Unit metadata: [metadata area]
+areas = {};
+for iSeries = 1:numel(dataSeriesNames)
+  if ~isempty(seriesDerivedPopulationData{iSeries})
+    if iSeries == 1
+      areas = [areas; repmat({'S1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 2
+      areas = [areas; repmat({'VB'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 3
+      areas = [areas; repmat({'Po'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 4
+      areas = [areas; repmat({'LP'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 5
+      areas = [areas; repmat({'DG'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 6
+      areas = [areas; repmat({'CA1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 7
+      areas = [areas; repmat({'RSC'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 8
+      areas = [areas; repmat({'VB'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 9
+      areas = [areas; repmat({'LP'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 10
+      areas = [areas; repmat({'LGN'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 11
+      areas = [areas; repmat({'CA3'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 12
+      areas = [areas; repmat({'VB'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    end
+  end
 end
 metadata = [num2cell(metadata) areas];
 
 % Unit metadata: correct unit type
-units = ismember(seriesDerivedPopulationDataS1.spkDB_units, seriesDerivedUnitDataS1.units);
-typeS1 = repmat({'mua'}, size(seriesDerivedPopulationDataS1.muaMetadata,1), 1); typeS1(units) = {'unit'};
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameVB)
-  units = ismember(seriesDerivedPopulationDataVB.spkDB_units, seriesDerivedUnitDataVB.units);
-  typeVB = repmat({'mua'}, size(seriesDerivedPopulationDataVB.muaMetadata,1), 1); typeVB(units) = {'unit'};
-end
-units = ismember(seriesDerivedPopulationDataPo.spkDB_units, seriesDerivedUnitDataPo.units);
-typePo = repmat({'mua'}, size(seriesDerivedPopulationDataPo.muaMetadata,1), 1); typePo(units) = {'unit'};
-units = ismember(seriesDerivedPopulationDataLP.spkDB_units, seriesDerivedUnitDataLP.units);
-typeLP = repmat({'mua'}, size(seriesDerivedPopulationDataLP.muaMetadata,1), 1); typeLP(units) = {'unit'};
-units = ismember(seriesDerivedPopulationDataDG.spkDB_units, seriesDerivedUnitDataDG.units);
-typeDG = repmat({'mua'}, size(seriesDerivedPopulationDataDG.muaMetadata,1), 1); typeDG(units) = {'unit'};
-units = ismember(seriesDerivedPopulationDataCA1.spkDB_units, seriesDerivedUnitDataCA1.units);
-typeCA1 = repmat({'mua'}, size(seriesDerivedPopulationDataCA1.muaMetadata,1), 1); typeCA1(units) = {'unit'};
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameRSC)
-  units = ismember(seriesDerivedPopulationDataRSC.spkDB_units, seriesDerivedUnitDataRSC.units);
-  typeRSC = repmat({'mua'}, size(seriesDerivedPopulationDataRSC.muaMetadata,1), 1); typeRSC(units) = {'unit'};
-end
-if isfield(derivedData.dataStruct.seriesData, dataSeriesNameVB) && isfield(derivedData.dataStruct.seriesData, dataSeriesNameRSC)
-  type = [typeS1; typeVB; typePo; typeLP; typeDG; typeCA1; typeRSC];
-else
-  if isfield(derivedData.dataStruct.seriesData, dataSeriesNameVB)
-    type = [typeS1; typeVB; typePo; typeLP; typeDG; typeCA1];
-  else
-    type = [typeS1; typePo; typeLP; typeDG; typeCA1; typeRSC];
+type = {};
+for iSeries = 1:numel(dataSeriesNames)
+  if ~isempty(seriesDerivedPopulationData{iSeries})
+    units = ismember(seriesDerivedPopulationData{iSeries}.spkDB_units, seriesDerivedUnitData{iSeries}.units);
+    typeArea = repmat({'mua'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1);
+    typeArea(units) = {'unit'};
+    type = [type; typeArea];
   end
 end
 metadata(:,2) = type;
 
 % Unit metadata: [metadata probe_id]
-metadata = [metadata [repmat({'probe1'},numel(typeS1),1); repmat({'probe2'},numel(type)-numel(typeS1),1)]];
+probeLabel = {};
+for iSeries = 1:numel(dataSeriesNames)
+  if ~isempty(seriesDerivedPopulationData{iSeries})
+    if iSeries == 1
+      probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 2
+      probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 3
+      probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 4
+      probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 5
+      probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 6
+      probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 7
+      probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 8
+      probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 9
+      probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 10
+      probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 11
+      probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    elseif iSeries == 12
+      probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+    end
+  end
+end
+metadata = [metadata probeLabel];
 
 % Unit metadata: [unit_id metadata]
 unitIDs = zeros(nRows,1);
@@ -552,7 +585,7 @@ metadataTbl = table(metadata(:,1), metadata(:,2), metadata(:,3), metadata(:,4), 
   metadata(:,9), metadata(:,10), metadata(:,11), metadata(:,12), electrodeGroups, ...
   'VariableNames', {'cluster_id', 'local_cluster_id', 'type',...
   'channel_index', 'channel_id', 'local_channel_id',...
-  'rel_horz_pos','rel_vert_pos', 'isi_violations',...
+  'rel_horz_pos', 'rel_vert_pos', 'isi_violations',...
   'isolation_distance', 'area', 'probe_id', 'electrode_group'});
 end
 
@@ -571,7 +604,7 @@ function [reshapedWaveformsMat, reshapedWaveformsVecGrp, reshapedWaveformsVec, w
 %                    dimension one in waveforms and maxWaveforms).
 %        iEl - probe reference number.
 %        metadata - a Matlab unit table produced by the function
-%                   getNeuronexusSpikes.
+%                   getSpikes.
 % Output: reshapedWaveformsMat - a 2D array reshaping waveforms.waveforms
 %                                array by collapsing the third dimension
 %                                and stacking all waveforms vertically one
