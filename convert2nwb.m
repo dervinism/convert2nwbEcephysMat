@@ -38,6 +38,7 @@ generateCore;
 if ~exist(animalDerivedDataFolderNWB, 'file')
   mkdir(animalDerivedDataFolderNWB) % Folder to store animal's converted NWB data
 end
+derivedData = animalDerivedDataFile;
 for iSess = 1:numel(sessionID)
   % Assign NWB file fields
   nwb = NwbFile( ...
@@ -70,14 +71,14 @@ for iSess = 1:numel(sessionID)
   input.electrodeCoordinates = electrodeCoordinates{iSess};
   input.sessionID = sessionID{iSess};
   input.electrodeLabel = electrodeLabel{iSess};
-  if probeInserted{input.iElectrode}
+  if probeInserted{iSess}{input.iElectrode} && ~isempty(endCh{iSess}{1})
     tbl1 = createElectrodeTable(nwb, input);
   else
     tbl1 = [];
   end
   
   input.iElectrode = 2;
-  if probeInserted{input.iElectrode}
+  if probeInserted{iSess}{input.iElectrode} && ~isempty(endCh{iSess}{2})
     tbl2 = createElectrodeTable(nwb, input);
   else
     tbl2 = [];
@@ -88,7 +89,7 @@ for iSess = 1:numel(sessionID)
   nwb.general_extracellular_ephys_electrodes = electrode_table;
   
   % Load spike times from the MAT file
-  [spikes, metadata, derivedData] = getSpikes(animalDerivedDataFile, animalID, sessionID{iSess}, tbl);
+  [spikes, metadata, derivedData] = getSpikes(derivedData, animalID, sessionID{iSess}, tbl);
   [spike_times_vector, spike_times_index] = util.create_indexed_column(spikes);
   spike_times_vector.description = 'Session spike times';
   spike_times_index.description = 'Indices dividing spike times into units';
@@ -97,18 +98,26 @@ for iSess = 1:numel(sessionID)
   waveformsFile1 = [electrodeFolder{iSess}{1} filesep 'waveforms.mat'];
   if exist(waveformsFile1, 'file')
     waveformsProbe1 = load(waveformsFile1);
-    [waveformMat1, waveformVecGrp1, waveformVec1, waveformMeans1] = reshapeWaveforms(waveformsProbe1, 1, metadata);
   else
+    waveformsProbe1 = [];
     waveformsProbe1.maxWaveforms = [];
-    waveformMat1 = []; waveformVecGrp1 = []; waveformVec1 = []'; waveformMeans1 = [];
+  end
+  if probeInserted{iSess}{1} && ~isempty(spikes)
+    [waveformMat1, waveformVecGrp1, waveformVec1, waveformMeans1] = reshapeWaveforms(waveformsProbe1, 1, metadata, nCh{iSess}{1});
+  else
+    waveformMat1 = []; waveformVecGrp1 = {}; waveformVec1 = {}; waveformMeans1 = {};
   end
   waveformsFile2 = [electrodeFolder{iSess}{2} filesep 'waveforms.mat'];
   if exist(waveformsFile2, 'file')
     waveformsProbe2 = load(waveformsFile2);
-    [waveformMat2, waveformVecGrp2, waveformVec2, waveformMeans2] = reshapeWaveforms(waveformsProbe2, 1, metadata);
   else
+    waveformsProbe2 = [];
     waveformsProbe2.maxWaveforms = [];
-    waveformMat2 = []; waveformVecGrp2 = []; waveformVec2 = []'; waveformMeans2 = [];
+  end
+  if probeInserted{iSess}{2} && ~isempty(spikes)
+    [waveformMat2, waveformVecGrp2, waveformVec2, waveformMeans2] = reshapeWaveforms(waveformsProbe2, 2, metadata, nCh{iSess}{2});
+  else
+    waveformMat2 = []; waveformVecGrp2 = {}; waveformVec2 = {}; waveformMeans2 = {};
   end
   maxWaveforms = [waveformsProbe1.maxWaveforms; waveformsProbe2.maxWaveforms];
   waveformMat = [waveformMat1; waveformMat2];
@@ -137,123 +146,142 @@ for iSess = 1:numel(sessionID)
   
   % Convert rel_horz_pos, rel_vert_pos, and waveform_mean to cell arrays of
   % strings. For some reason I cannot store them in the NWB file in any
-  % other form than strings.
-  rel_horz_pos = num2cell(cell2mat(table2array(metadata(:,7)))./1000);
-  rel_vert_pos = num2cell(cell2mat(table2array(metadata(:,8)))./1000);
-  for iUnit = 1:numel(rel_horz_pos)
-    rel_horz_pos{iUnit} = num2str(rel_horz_pos{iUnit});
-    rel_vert_pos{iUnit} = num2str(rel_vert_pos{iUnit});
-    waveformMeans{iUnit} = num2str(waveformMeans{iUnit});
+  % other form than strings in Matlab R2021a. Matlab R2022a is fine.
+  if ~isempty(spikes)
+    rel_horz_pos = num2cell(cell2mat(table2array(metadata(:,7)))./1000);
+    rel_vert_pos = num2cell(cell2mat(table2array(metadata(:,8)))./1000);
+    for iUnit = 1:numel(rel_horz_pos)
+      rel_horz_pos{iUnit} = num2str(rel_horz_pos{iUnit});
+      rel_vert_pos{iUnit} = num2str(rel_vert_pos{iUnit});
+      waveformMeans{iUnit} = num2str(waveformMeans{iUnit});
+    end
+  else
+    rel_horz_pos = [];
+    rel_vert_pos = [];
   end
   
   % Store spiking and waveform data inside the nwb object
   % see https://neurodatawithoutborders.github.io/matnwb/doc/+types/+core/Units.html
-  nwb.units = types.core.Units( ...
-    'colnames', {'cluster_id','local_cluster_id','type',...
-    'peak_channel_index','peak_channel_id',... % Provide the column order. All column names have to be defined below
-    'local_peak_channel_id','rel_horz_pos','rel_vert_pos',...
-    'isi_violations','isolation_distance','area','probe_id',...
-    'spike_times','spike_times_index'}, ...
-    'description', 'Units table', ...
-    'id', types.hdmf_common.ElementIdentifiers( ...
-    'data', int64(0:length(spikes) - 1)), ...
-    'cluster_id', types.hdmf_common.VectorData( ...
-    'data', metadata(:,1), ...
-    'description', 'Unique cluster id'), ...
-    'local_cluster_id', types.hdmf_common.VectorData( ...
-    'data', metadata(:,2), ...
-    'description', 'Local cluster id on the probe'), ...
-    'type', types.hdmf_common.VectorData( ...
-    'data', metadata(:,3), ...
-    'description', 'Cluster type: unit vs mua'), ...
-    'peak_channel_index', types.hdmf_common.VectorData( ...
-    'data', metadata(:,4), ...
-    'description', 'Peak channel row index in the electrode table'), ...
-    'peak_channel_id', types.hdmf_common.VectorData( ...
-    'data', metadata(:,5), ...
-    'description', 'Unique ID of the channel with the largest cluster waveform amplitude'), ...
-    'local_peak_channel_id', types.hdmf_common.VectorData( ...
-    'data', metadata(:,6), ...
-    'description', 'Local probe channel with the largest cluster waveform amplitude'), ...
-    'rel_horz_pos', types.hdmf_common.VectorData( ...
-    'data', rel_horz_pos, ...
-    'description', 'Probe-relative horizontal position in mm'), ...
-    'rel_vert_pos', types.hdmf_common.VectorData( ...
-    'data', rel_vert_pos, ...
-    'description', 'Probe tip-relative vertical position in mm'), ...
-    'isi_violations', types.hdmf_common.VectorData( ...
-    'data', metadata(:,9), ...
-    'description', 'Interstimulus interval violations (unit quality measure)'), ...
-    'isolation_distance', types.hdmf_common.VectorData( ...
-    'data', metadata(:,10), ...
-    'description', 'Cluster isolation distance (unit quality measure)'), ...
-    'area', types.hdmf_common.VectorData( ...
-    'data', metadata(:,11), ...
-    'description', ['Brain area where the unit is located. Internal thalamic' ...
-    'nuclei divisions are not precise, because they are derived from unit locations on the probe.']), ...
-    'probe_id', types.hdmf_common.VectorData( ...
-    'data', metadata(:,12), ...
-    'description', 'Probe id where the unit is located'), ...
-    'spike_times', spike_times_vector, ...
-    'spike_times_index', spike_times_index, ...
-    'electrode_group', types.hdmf_common.VectorData( ...
-    'data', metadata(:,13), ...
-    'description', 'Recording channel groups'), ...
-    'electrodes', types.hdmf_common.DynamicTableRegion('table', ...
-    types.untyped.ObjectView('/general/extracellular_ephys/electrodes'), ...
-    'description',  'Probe recording channels', ...
-    'data', cell2mat(table2array(metadata(:,1)))), ...
-    'waveform_mean', types.hdmf_common.VectorData( ...
-    'data', waveformMeans, ...
-    'description', ['Mean waveforms on the probe channel with the largest waveform amplitude.' ...
-    'MUA waveforms are excluded. The order that waveforms are stored match the order of units in the unit table.']) ...
-    );
+  if ~isempty(spikes)
+    nwb.units = types.core.Units( ...
+      'colnames', {'cluster_id','local_cluster_id','type',...
+      'peak_channel_index','peak_channel_id',... % Provide the column order. All column names have to be defined below
+      'local_peak_channel_id','rel_horz_pos','rel_vert_pos',...
+      'isi_violations','isolation_distance','area','probe_id',...
+      'spike_times','spike_times_index'}, ...
+      'description', 'Units table', ...
+      'id', types.hdmf_common.ElementIdentifiers( ...
+      'data', int64(0:length(spikes) - 1)), ...
+      'cluster_id', types.hdmf_common.VectorData( ...
+      'data', metadata(:,1), ...
+      'description', 'Unique cluster id'), ...
+      'local_cluster_id', types.hdmf_common.VectorData( ...
+      'data', metadata(:,2), ...
+      'description', 'Local cluster id on the probe'), ...
+      'type', types.hdmf_common.VectorData( ...
+      'data', metadata(:,3), ...
+      'description', 'Cluster type: unit vs mua'), ...
+      'peak_channel_index', types.hdmf_common.VectorData( ...
+      'data', metadata(:,4), ...
+      'description', 'Peak channel row index in the electrode table'), ...
+      'peak_channel_id', types.hdmf_common.VectorData( ...
+      'data', metadata(:,5), ...
+      'description', 'Unique ID of the channel with the largest cluster waveform amplitude'), ...
+      'local_peak_channel_id', types.hdmf_common.VectorData( ...
+      'data', metadata(:,6), ...
+      'description', 'Local probe channel with the largest cluster waveform amplitude'), ...
+      'rel_horz_pos', types.hdmf_common.VectorData( ...
+      'data', rel_horz_pos, ...
+      'description', 'Probe-relative horizontal position in mm'), ...
+      'rel_vert_pos', types.hdmf_common.VectorData( ...
+      'data', rel_vert_pos, ...
+      'description', 'Probe tip-relative vertical position in mm'), ...
+      'isi_violations', types.hdmf_common.VectorData( ...
+      'data', metadata(:,9), ...
+      'description', 'Interstimulus interval violations (unit quality measure)'), ...
+      'isolation_distance', types.hdmf_common.VectorData( ...
+      'data', metadata(:,10), ...
+      'description', 'Cluster isolation distance (unit quality measure)'), ...
+      'area', types.hdmf_common.VectorData( ...
+      'data', metadata(:,11), ...
+      'description', ['Brain area where the unit is located. Internal thalamic' ...
+      'nuclei divisions are not precise, because they are derived from unit locations on the probe.']), ...
+      'probe_id', types.hdmf_common.VectorData( ...
+      'data', metadata(:,12), ...
+      'description', 'Probe id where the unit is located'), ...
+      'spike_times', spike_times_vector, ...
+      'spike_times_index', spike_times_index, ...
+      'electrode_group', types.hdmf_common.VectorData( ...
+      'data', metadata(:,13), ...
+      'description', 'Recording channel groups'), ...
+      'electrodes', types.hdmf_common.DynamicTableRegion('table', ...
+      types.untyped.ObjectView('/general/extracellular_ephys/electrodes'), ...
+      'description',  'Probe recording channels', ...
+      'data', cell2mat(table2array(metadata(:,1)))), ...
+      'waveform_mean', types.hdmf_common.VectorData( ...
+      'data', waveformMeans, ...
+      'description', ['Mean waveforms on the probe channel with the largest waveform amplitude.' ...
+      'MUA waveforms are excluded. The order that waveforms are stored match the order of units in the unit table.']) ...
+      );
+  end
   
   % Add behavioural data: Pupil area size
   % see https://neurodatawithoutborders.github.io/matnwb/doc/+types/+core/TimeSeries.html
   % and https://neurodatawithoutborders.github.io/matnwb/doc/+types/+core/PupilTracking.html
-  acceptablePeriod = derivedData.dataStruct.eyeData.([animalID '_s' sessionID{iSess}]).period; % Acceptable quality range in seconds
-  videoFrameTimes = derivedData.dataStruct.eyeData.([animalID '_s' sessionID{iSess}]).frameTimes; % seconds
-  acceptableSamples = markQualitySamples(acceptablePeriod, videoFrameTimes);
-  pupilAreaSize = derivedData.dataStruct.eyeData.([animalID '_s' sessionID{iSess}]).pupilArea; % pixels^2
-  pupilAreaSize = types.core.TimeSeries( ...
-    'data', pupilAreaSize, ...
-    'timestamps', videoFrameTimes, ...
-    'data_unit', 'pixels^2', ...
-    'starting_time_rate', videoFrameRate,...
-    'control', uint8(acceptableSamples),...
-    'control_description', {'low quality samples that should be excluded from analyses';...
-    'acceptable quality samples'},...
-    'description', ['Pupil area size over the recording session measured in pixels^2' ...
-    'Acceptable quality period starting and ending times are given by data_continuity parameter.' ...
-    'The full data range can be divided into multiple acceptable periods'] ...
-    );
-  
-  pupilTracking = types.core.PupilTracking('TimeSeries', pupilAreaSize);
-  behaviorModule = types.core.ProcessingModule('description', 'contains behavioral data');
-  behaviorModule.nwbdatainterface.set('PupilTracking', pupilTracking);
+  if isfield(derivedData.dataStruct, 'eyeData') && isfield(derivedData.dataStruct.eyeData, [animalID '_s' sessionID{iSess}])
+    acceptablePeriod = derivedData.dataStruct.eyeData.([animalID '_s' sessionID{iSess}]).period; % Acceptable quality range in seconds
+    videoFrameTimes = derivedData.dataStruct.eyeData.([animalID '_s' sessionID{iSess}]).frameTimes; % seconds
+    acceptableSamples = markQualitySamples(acceptablePeriod, videoFrameTimes);
+    pupilAreaSize = derivedData.dataStruct.eyeData.([animalID '_s' sessionID{iSess}]).pupilArea; % pixels^2
+    pupilAreaSize = types.core.TimeSeries( ...
+      'data', pupilAreaSize, ...
+      'timestamps', videoFrameTimes, ...
+      'data_unit', 'pixels^2', ...
+      'starting_time_rate', videoFrameRate,...
+      'control', uint8(acceptableSamples),...
+      'control_description', {'low quality samples that should be excluded from analyses';...
+      'acceptable quality samples'},...
+      'description', ['Pupil area size over the recording session measured in pixels^2' ...
+      'Acceptable quality period starting and ending times are given by data_continuity parameter.' ...
+      'The full data range can be divided into multiple acceptable periods'] ...
+      );
+    
+    pupilTracking = types.core.PupilTracking('TimeSeries', pupilAreaSize);
+    behaviorModule = types.core.ProcessingModule('description', 'contains behavioral data');
+    behaviorModule.nwbdatainterface.set('PupilTracking', pupilTracking);
+  else
+    behaviorModule = [];
+  end
   
   % Add behavioural data: Total movement of the facial area
   % see https://neurodatawithoutborders.github.io/matnwb/doc/+types/+core/TimeSeries.html
   % and https://neurodatawithoutborders.github.io/matnwb/doc/+types/+core/BehavioralTimeSeries.html
-  acceptablePeriod = derivedData.dataStruct.motionData.([animalID '_s' sessionID{iSess}]).period; % Acceptable quality range in seconds
-  videoFrameTimes = derivedData.dataStruct.motionData.([animalID '_s' sessionID{iSess}]).frameTimes; % seconds
-  acceptableSamples = markQualitySamples(acceptablePeriod, videoFrameTimes);
-  totalFaceMovement = derivedData.dataStruct.motionData.([animalID '_s' sessionID{iSess}]).sa; % z-scored change in the frame pixels' content with respect to the previous frame
-  totalFaceMovement = types.core.TimeSeries( ...
-    'data', totalFaceMovement, ...
-    'timestamps', videoFrameTimes, ...
-    'data_unit', 'a.u.', ...
-    'control', uint8(acceptableSamples),...
-    'control_description', {'low quality samples that should be excluded from analyses';...
-    'acceptable quality samples'},...
-    'description', ['Z-scored change in the frame pixels'' content with respect to the previous frame.' ...
-    'It measures the total movement of objects inside the video.'] ...
-    );
+  if isfield(derivedData.dataStruct, 'motionData') && isfield(derivedData.dataStruct.motionData, [animalID '_s' sessionID{iSess}])
+    acceptablePeriod = derivedData.dataStruct.motionData.([animalID '_s' sessionID{iSess}]).period; % Acceptable quality range in seconds
+    videoFrameTimes = derivedData.dataStruct.motionData.([animalID '_s' sessionID{iSess}]).frameTimes; % seconds
+    acceptableSamples = markQualitySamples(acceptablePeriod, videoFrameTimes);
+    totalFaceMovement = derivedData.dataStruct.motionData.([animalID '_s' sessionID{iSess}]).sa; % z-scored change in the frame pixels' content with respect to the previous frame
+    totalFaceMovement = types.core.TimeSeries( ...
+      'data', totalFaceMovement, ...
+      'timestamps', videoFrameTimes, ...
+      'data_unit', 'a.u.', ...
+      'control', uint8(acceptableSamples),...
+      'control_description', {'low quality samples that should be excluded from analyses';...
+      'acceptable quality samples'},...
+      'description', ['Z-scored change in the frame pixels'' content with respect to the previous frame.' ...
+      'It measures the total movement of objects inside the video.'] ...
+      );
+    
+    behavioralTimeSeries = types.core.BehavioralTimeSeries('TimeSeries', totalFaceMovement);
+    if ~exist('behaviorModule', 'var') || isempty(behaviorModule)
+      behaviorModule = types.core.ProcessingModule('description', 'contains behavioral data');
+    end
+    behaviorModule.nwbdatainterface.set('BehavioralTimeSeries', behavioralTimeSeries);
+  end
   
-  behavioralTimeSeries = types.core.BehavioralTimeSeries('TimeSeries', totalFaceMovement);
-  behaviorModule.nwbdatainterface.set('BehavioralTimeSeries', behavioralTimeSeries);
-  nwb.processing.set('behavior', behaviorModule);
+  if exist('behaviorModule', 'var') && ~isempty(behaviorModule)
+    nwb.processing.set('behavior', behaviorModule);
+  end
   
   % Save the NWB file for the session
   if iSess < 10
@@ -366,7 +394,8 @@ function [spikes, metadataTbl, derivedData] = getSpikes(animalDerivedDataFile, a
 %
 % Function loads Neuronexus spiking data from a MAT file with a custom data
 % structure. Input:
-%   animalDerivedDataFile - a string with derived data file name.
+%   animalDerivedDataFile - a string with derived data file name or already
+%                           loaded data.
 %   animalID - an animal ID string.
 %   sessionID - a session of interest ID string.
 %   electrodeTbl - a Matlab table with electrode information generated by
@@ -404,7 +433,11 @@ function [spikes, metadataTbl, derivedData] = getSpikes(animalDerivedDataFile, a
 %         derivedData - animal data loaded from the MAT derived data file.
 
 % Data series names with different brain areas
-derivedData = load(animalDerivedDataFile);
+if ~isstruct(animalDerivedDataFile)
+  derivedData = load(animalDerivedDataFile);
+else
+  derivedData = animalDerivedDataFile;
+end
 dataSeriesNames = {};
 for iSeries = 1:11
   dataSeriesNames{iSeries} = [animalID '_s' sessionID num2str(iSeries)];
@@ -452,144 +485,164 @@ end
 
 % Spike times
 nRows = size(sparseSpikes,1);
-timeVector = (1:size(sparseSpikes,2))./srData;
-for iUnit = 1:nRows
-  spikes{iUnit} = timeVector(logical(full(sparseSpikes(iUnit,:)))); %#ok<*SAGROW>
+if nRows
+  timeVector = (1:size(sparseSpikes,2))./srData;
+  for iUnit = 1:nRows
+    spikes{iUnit} = timeVector(logical(full(sparseSpikes(iUnit,:)))); %#ok<*SAGROW>
+  end
+else
+  spikes = [];
 end
 
 % Unit metadata: [local_unit_id type local_probe_channel horizontal_position vertical_position ...
 %                 isi_violations isolation_distance anterior_posterior_ccf_coordinate ...
 %                 dorsal_ventral_ccf_coordinate left_right_ccf_coordinate]
 metadata = [];
-for iSeries = 1:numel(dataSeriesNames)
-  if ~isempty(seriesDerivedPopulationData{iSeries})
-    metadata = concatenateMat(metadata, seriesDerivedPopulationData{iSeries}.muaMetadata);
+if nRows
+  for iSeries = 1:numel(dataSeriesNames)
+    if ~isempty(seriesDerivedPopulationData{iSeries})
+      metadata = concatenateMat(metadata, seriesDerivedPopulationData{iSeries}.muaMetadata);
+    end
   end
 end
 
 % Unit metadata: [metadata area]
-areas = {};
-for iSeries = 1:numel(dataSeriesNames)
-  if ~isempty(seriesDerivedPopulationData{iSeries})
-    if iSeries == 1
-      areas = [areas; repmat({'S1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 2
-      areas = [areas; repmat({'VB'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 3
-      areas = [areas; repmat({'Po'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 4
-      areas = [areas; repmat({'LP'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 5
-      areas = [areas; repmat({'DG'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 6
-      areas = [areas; repmat({'CA1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 7
-      areas = [areas; repmat({'RSC'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 8
-      areas = [areas; repmat({'VB'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 9
-      areas = [areas; repmat({'LP'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 10
-      areas = [areas; repmat({'LGN'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 11
-      areas = [areas; repmat({'CA3'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 12
-      areas = [areas; repmat({'VB'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+if nRows
+  areas = {};
+  for iSeries = 1:numel(dataSeriesNames)
+    if ~isempty(seriesDerivedPopulationData{iSeries})
+      if iSeries == 1
+        areas = [areas; repmat({'S1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 2
+        areas = [areas; repmat({'VB'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 3
+        areas = [areas; repmat({'Po'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 4
+        areas = [areas; repmat({'LP'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 5
+        areas = [areas; repmat({'DG'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 6
+        areas = [areas; repmat({'CA1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 7
+        areas = [areas; repmat({'RSC'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 8
+        areas = [areas; repmat({'VB'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 9
+        areas = [areas; repmat({'LP'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 10
+        areas = [areas; repmat({'LGN'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 11
+        areas = [areas; repmat({'CA3'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 12
+        areas = [areas; repmat({'VB'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      end
     end
   end
+  metadata = [num2cell(metadata) areas];
 end
-metadata = [num2cell(metadata) areas];
 
 % Unit metadata: correct unit type
-type = {};
-for iSeries = 1:numel(dataSeriesNames)
-  if ~isempty(seriesDerivedPopulationData{iSeries})
-    units = ismember(seriesDerivedPopulationData{iSeries}.spkDB_units, seriesDerivedUnitData{iSeries}.units);
-    typeArea = repmat({'mua'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1);
-    typeArea(units) = {'unit'};
-    type = [type; typeArea];
-  end
-end
-metadata(:,2) = type;
-
-% Unit metadata: [metadata probe_id]
-probeLabel = {};
-for iSeries = 1:numel(dataSeriesNames)
-  if ~isempty(seriesDerivedPopulationData{iSeries})
-    if iSeries == 1
-      probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 2
-      probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 3
-      probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 4
-      probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 5
-      probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 6
-      probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 7
-      probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 8
-      probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 9
-      probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 10
-      probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 11
-      probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
-    elseif iSeries == 12
-      probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+if nRows
+  type = {};
+  for iSeries = 1:numel(dataSeriesNames)
+    if ~isempty(seriesDerivedPopulationData{iSeries})
+      units = ismember(seriesDerivedPopulationData{iSeries}.spkDB_units, seriesDerivedUnitData{iSeries}.units);
+      typeArea = repmat({'mua'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1);
+      typeArea(units) = {'unit'};
+      type = [type; typeArea];
     end
   end
+  metadata(:,2) = type;
 end
-metadata = [metadata probeLabel];
+
+% Unit metadata: [metadata probe_id]
+if nRows
+  probeLabel = {};
+  for iSeries = 1:numel(dataSeriesNames)
+    if ~isempty(seriesDerivedPopulationData{iSeries})
+      if iSeries == 1
+        probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 2
+        probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 3
+        probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 4
+        probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 5
+        probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 6
+        probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 7
+        probeLabel = [probeLabel; repmat({'probe2'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 8
+        probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 9
+        probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 10
+        probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 11
+        probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      elseif iSeries == 12
+        probeLabel = [probeLabel; repmat({'probe1'}, size(seriesDerivedPopulationData{iSeries}.muaMetadata,1), 1)];
+      end
+    end
+  end
+  metadata = [metadata probeLabel];
+end
 
 % Unit metadata: [unit_id metadata]
-unitIDs = zeros(nRows,1);
-for iUnit = 1:nRows
-  if strcmpi(metadata{iUnit, end}, 'probe1')
-    unitID = [num2str(sessionID) '1'];
-  else
-    unitID = [num2str(sessionID) '2'];
+if nRows
+  unitIDs = zeros(nRows,1);
+  for iUnit = 1:nRows
+    if strcmpi(metadata{iUnit, end}, 'probe1')
+      unitID = [num2str(sessionID) '1'];
+    else
+      unitID = [num2str(sessionID) '2'];
+    end
+    if metadata{iUnit, 1} < 9
+      unitID = [unitID '000' num2str(metadata{iUnit, 1})];
+    elseif metadata{iUnit, 1} < 99
+      unitID = [unitID '00' num2str(metadata{iUnit, 1})];
+    elseif metadata{iUnit, 1} < 999
+      unitID = [unitID '0' num2str(metadata{iUnit, 1})];
+    else
+      unitID = [unitID num2str(metadata{iUnit, 1})];
+    end
+    unitIDs(iUnit) = str2double(unitID);
   end
-  if metadata{iUnit, 1} < 9
-    unitID = [unitID '000' num2str(metadata{iUnit, 1})];
-  elseif metadata{iUnit, 1} < 99
-    unitID = [unitID '00' num2str(metadata{iUnit, 1})];
-  elseif metadata{iUnit, 1} < 999
-    unitID = [unitID '0' num2str(metadata{iUnit, 1})];
-  else
-    unitID = [unitID num2str(metadata{iUnit, 1})];
-  end
-  unitIDs(iUnit) = str2double(unitID);
+  metadata = [num2cell(unitIDs) metadata];
 end
-metadata = [num2cell(unitIDs) metadata];
 
 % Unit metadata: [metadata(:,1:3) probe_channel_index probe_channel_id metadata(:,4:end)]
-channelIndices = zeros(nRows,1);
-channelIDs = zeros(nRows,1);
-electrodeGroups = {};
-for iUnit = 1:nRows
-  ind = table2array(electrodeTbl(:,2)) == cell2mat(metadata(iUnit,4)) &...
-    contains(table2array(electrodeTbl(:,end)), metadata(iUnit,end));
-  channelIndices(iUnit) = find(ind);
-  channelIDs(iUnit) = table2array(electrodeTbl(ind,1));
-  electrodeGroups = [electrodeGroups; table2array(electrodeTbl(ind,9))];
+if nRows
+  channelIndices = zeros(nRows,1);
+  channelIDs = zeros(nRows,1);
+  electrodeGroups = {};
+  for iUnit = 1:nRows
+    ind = table2array(electrodeTbl(:,2)) == cell2mat(metadata(iUnit,4)) &...
+      contains(table2array(electrodeTbl(:,end)), metadata(iUnit,end));
+    channelIndices(iUnit) = find(ind);
+    channelIDs(iUnit) = table2array(electrodeTbl(ind,1));
+    electrodeGroups = [electrodeGroups; table2array(electrodeTbl(ind,9))];
+  end
+  metadata = [metadata(:,1:3) num2cell(channelIndices) num2cell(channelIDs) metadata(:,4:end)];
 end
-metadata = [metadata(:,1:3) num2cell(channelIndices) num2cell(channelIDs) metadata(:,4:end)];
 
 % Unit metadata: [metadata electrode_group]
-metadataTbl = table(metadata(:,1), metadata(:,2), metadata(:,3), metadata(:,4), ...
-  metadata(:,5), metadata(:,6), metadata(:,7), metadata(:,8), ...
-  metadata(:,9), metadata(:,10), metadata(:,11), metadata(:,12), electrodeGroups, ...
-  'VariableNames', {'cluster_id', 'local_cluster_id', 'type',...
-  'channel_index', 'channel_id', 'local_channel_id',...
-  'rel_horz_pos', 'rel_vert_pos', 'isi_violations',...
-  'isolation_distance', 'area', 'probe_id', 'electrode_group'});
+if nRows
+  metadataTbl = table(metadata(:,1), metadata(:,2), metadata(:,3), metadata(:,4), ...
+    metadata(:,5), metadata(:,6), metadata(:,7), metadata(:,8), ...
+    metadata(:,9), metadata(:,10), metadata(:,11), metadata(:,12), electrodeGroups, ...
+    'VariableNames', {'cluster_id', 'local_cluster_id', 'type',...
+    'channel_index', 'channel_id', 'local_channel_id',...
+    'rel_horz_pos', 'rel_vert_pos', 'isi_violations',...
+    'isolation_distance', 'area', 'probe_id', 'electrode_group'});
+else
+  metadataTbl = [];
+end
 end
 
-function [reshapedWaveformsMat, reshapedWaveformsVecGrp, reshapedWaveformsVec, waveformsMean] = reshapeWaveforms(waveforms, iEl, metadata)
+function [reshapedWaveformsMat, reshapedWaveformsVecGrp, reshapedWaveformsVec, waveformsMean] = reshapeWaveforms(waveforms, iEl, metadata, nCh)
 % [reshapedWaveformsMat, reshapedWaveformsVecGrp, reshapedWaveformsVec, waveformsMean] = reshapeWaveforms(waveforms, iEl, metadata)
 %
 % Function extracts relevant waveform information and reshapes the waveform
@@ -605,6 +658,8 @@ function [reshapedWaveformsMat, reshapedWaveformsVecGrp, reshapedWaveformsVec, w
 %        iEl - probe reference number.
 %        metadata - a Matlab unit table produced by the function
 %                   getSpikes.
+%        nCh - number of recording channels with waveforms for the same
+%              unit.
 % Output: reshapedWaveformsMat - a 2D array reshaping waveforms.waveforms
 %                                array by collapsing the third dimension
 %                                and stacking all waveforms vertically one
@@ -622,15 +677,23 @@ function [reshapedWaveformsMat, reshapedWaveformsVecGrp, reshapedWaveformsVec, w
 %         waveformsMean - waveforms.waveforms converted into a cell column
 %                         array. MUAs are NaNs.
 
-reshapedWaveformsMat = zeros(size(waveforms.waveforms,1)*size(waveforms.waveforms,3),size(waveforms.waveforms,2));
+if isfield(waveforms, 'waveforms')
+  reshapedWaveformsMat = zeros(size(waveforms.waveforms,1)*size(waveforms.waveforms,3),size(waveforms.waveforms,2));
+else
+  reshapedWaveformsMat = [];
+end
 reshapedWaveformsVecGrp = {};
 reshapedWaveformsVec = {};
 waveformsMean = {};
 metadataInds = ismember(table2cell(metadata(:,12)), ['probe' num2str(iEl)]);
 metadata = metadata(metadataInds,:);
 for iUnit = 1:size(metadata,1)
-  row = find(ismember(waveforms.cluIDs, cell2mat(table2cell(metadata(iUnit,2)))));
-  if sum(ismember(waveforms.cluIDs, cell2mat(table2cell(metadata(iUnit,2)))))
+  if isfield(waveforms, 'cluIDs')
+    row = find(ismember(waveforms.cluIDs, cell2mat(table2cell(metadata(iUnit,2)))));
+  else
+    row = [];
+  end
+  if isfield(waveforms, 'cluIDs') && sum(ismember(waveforms.cluIDs, cell2mat(table2cell(metadata(iUnit,2)))))
     unitWaveformMat = squeeze(waveforms.waveforms(row,:,:))';
     reshapedWaveformsMat((row-1)*size(waveforms.waveforms,3)+1:row*size(waveforms.waveforms,3),:) = unitWaveformMat;
     reshapedWaveformsVecGrp = [reshapedWaveformsVecGrp; {unitWaveformMat}];
@@ -640,8 +703,14 @@ for iUnit = 1:size(metadata,1)
     waveformsMean = [waveformsMean; {waveforms.maxWaveforms(row,:)}];
   else
     reshapedWaveformsVecGrp = [reshapedWaveformsVecGrp; {[]}];
-    for iWave = 1:size(waveforms.waveforms,3)
-      reshapedWaveformsVec = [reshapedWaveformsVec; {[]}];
+    if isfield(waveforms, 'waveforms')
+      for iWave = 1:size(waveforms.waveforms,3)
+        reshapedWaveformsVec = [reshapedWaveformsVec; {[]}];
+      end
+    else
+      for iWave = 1:nCh
+        reshapedWaveformsVec = [reshapedWaveformsVec; {[]}];
+      end
     end
     waveformsMean = [waveformsMean; {nan(1,size(waveforms.maxWaveforms,2))}];
   end
